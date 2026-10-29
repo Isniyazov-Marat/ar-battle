@@ -1,0 +1,421 @@
+
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AR Robot Battle</title>
+
+<script src="https://aframe.io/releases/1.6.0/aframe.min.js"></script>
+<script src="https://raw.githack.com/AR-js-org/AR.js/3.4.7/aframe/build/aframe-ar.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/aframe-extras@7.5.4/dist/aframe-extras.min.js"></script>
+
+<style>
+body {
+    margin: 0;
+    font-family: Arial, sans-serif;
+}
+
+#hud {
+    position: fixed;
+    top: 10px;
+    left: 10px;
+    right: 10px;
+    z-index: 999;
+    padding: 12px;
+    border-radius: 12px;
+    background: rgba(0, 0, 0, 0.75);
+    color: white;
+    max-width: 400px;
+    box-sizing: border-box;
+}
+
+h2 {
+    margin: 0 0 8px;
+    text-align: center;
+    color: #ffcc00;
+}
+
+.info {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 8px;
+}
+
+progress {
+    width: 100%;
+    height: 18px;
+    accent-color: #30d158;
+}
+
+#robotBar {
+    accent-color: #ff453a;
+}
+
+#message {
+    text-align: center;
+    min-height: 42px;
+    margin-top: 12px;
+    color: #ffcc00;
+    font-weight: bold;
+}
+
+.buttons {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+button {
+    flex: 1;
+    padding: 11px 4px;
+    border: none;
+    border-radius: 8px;
+    background: #007aff;
+    color: white;
+    font-weight: bold;
+    font-size: 14px;
+}
+
+button:disabled {
+    opacity: 0.4;
+}
+
+#restartBtn {
+    background: #ff9500;
+}
+</style>
+</head>
+
+<body>
+
+<div id="hud">
+    <h2>AR ROBOT BATTLE</h2>
+
+    <div class="info">
+        <span>🤖 ROBOT</span>
+        <span id="robotHpText">50 / 50</span>
+    </div>
+    <progress id="robotBar" max="50" value="50"></progress>
+
+    <div class="info">
+        <span>🧑 PLAYER</span>
+        <span id="playerHpText">50 / 50</span>
+    </div>
+    <progress id="playerBar" max="50" value="50"></progress>
+
+    <div class="info">
+        <span id="levelText">LEVEL 1</span>
+        <span id="winText">WIN: 0</span>
+    </div>
+
+    <div id="message">ロボットをタップして攻撃！</div>
+
+    <div class="buttons">
+        <button id="attackBtn" onclick="attack()">攻撃</button>
+        <button id="healBtn" onclick="heal()">回復 (3)</button>
+        <button id="restartBtn" onclick="restartGame()">もう一度</button>
+    </div>
+</div>
+
+<a-scene
+    embedded
+    arjs="sourceType: webcam; debugUIEnabled: false"
+    cursor="rayOrigin: mouse"
+    raycaster="objects: .clickable"
+    vr-mode-ui="enabled: false">
+
+    <a-marker preset="hiro" smooth="true">
+        <a-entity id="model" position="0 0 0.5">
+            <a-gltf-model
+                id="robot"
+                class="clickable"
+                src="robot.glb"
+                position="0 0 0"
+                rotation="-90 0 0"
+                scale="0.3 0.3 0.3"
+                animation-mixer="clip: RobotArmature|Robot_Idle">
+            </a-gltf-model>
+        </a-entity>
+    </a-marker>
+
+    <a-entity camera></a-entity>
+</a-scene>
+
+<audio id="hitSound" src="hit.mp3" preload="auto"></audio>
+<audio id="missSound" src="miss.mp3" preload="auto"></audio>
+<audio id="deathSound" src="death.mp3" preload="auto"></audio>
+<audio id="enemySound" src="enemy-attack.mp3" preload="auto"></audio>
+<audio id="levelSound" src="levelUp.mp3" preload="auto"></audio>
+
+<script>
+const robot = document.getElementById("robot");
+const robotBar = document.getElementById("robotBar");
+const playerBar = document.getElementById("playerBar");
+
+const robotHpText = document.getElementById("robotHpText");
+const playerHpText = document.getElementById("playerHpText");
+const message = document.getElementById("message");
+const levelText = document.getElementById("levelText");
+const winText = document.getElementById("winText");
+
+const attackBtn = document.getElementById("attackBtn");
+const healBtn = document.getElementById("healBtn");
+
+let robotHp = 50;
+let robotMaxHp = 50;
+let playerHp = 50;
+let playerMaxHp = 50;
+
+let level = 1;
+let wins = 0;
+let potions = 3;
+
+let busy = false;
+let gameEnded = false;
+let battleToken = 0;
+let pendingTimer = null;
+
+function playSound(id) {
+    const sound = document.getElementById(id);
+    if (!sound) return;
+
+    sound.pause();
+    sound.currentTime = 0;
+    sound.play().catch(() => {});
+}
+
+function animateRobot(clip, once = false) {
+    robot.removeAttribute("animation-mixer");
+
+    robot.setAttribute("animation-mixer", {
+        clip: "RobotArmature|" + clip,
+        loop: once ? "once" : "repeat",
+        clampWhenFinished: once
+    });
+}
+
+function updateHud() {
+    robotBar.max = robotMaxHp;
+    robotBar.value = robotHp;
+
+    playerBar.max = playerMaxHp;
+    playerBar.value = playerHp;
+
+    robotHpText.textContent =
+        robotHp + " / " + robotMaxHp;
+
+    playerHpText.textContent =
+        playerHp + " / " + playerMaxHp;
+
+    levelText.textContent = "LEVEL " + level;
+    winText.textContent = "WIN: " + wins;
+
+    healBtn.textContent = "回復 (" + potions + ")";
+
+    attackBtn.disabled = busy || gameEnded;
+
+    healBtn.disabled =
+        busy || gameEnded ||
+        potions <= 0 || playerHp >= playerMaxHp;
+}
+
+function randomDamage() {
+    return Math.floor(Math.random() * 10) + 1;
+}
+
+function wait(ms, callback) {
+    const token = battleToken;
+
+    pendingTimer = setTimeout(() => {
+        pendingTimer = null;
+        if (token !== battleToken) return;
+        callback();
+    }, ms);
+}
+
+function attack() {
+    if (busy || gameEnded) return;
+
+    busy = true;
+    updateHud();
+
+    if (Math.random() < 0.3) {
+        message.textContent = "攻撃失敗！MISS！";
+        playSound("missSound");
+        animateRobot("Robot_Duck", true);
+
+        wait(900, () => {
+            animateRobot("Robot_Idle");
+            enemyAttack();
+        });
+        return;
+    }
+
+    let damage = randomDamage();
+
+    const critical = Math.random() < 0.1;
+
+    if (critical) {
+        damage *= 2;
+    }
+
+    robotHp = Math.max(0, robotHp - damage);
+
+    message.textContent = critical
+        ? "会心の一撃！ " + damage + " ダメージ！"
+        : "攻撃成功！ " + damage + " ダメージ！";
+
+    playSound("hitSound");
+    updateHud();
+
+    if (robotHp <= 0) {
+        robotDefeated();
+        return;
+    }
+
+    animateRobot("Robot_Jump", true);
+
+    wait(1100, () => {
+        animateRobot("Robot_Idle");
+        enemyAttack();
+    });
+}
+
+function enemyAttack() {
+    if (gameEnded) return;
+
+    message.textContent = "ロボットの反撃！";
+    playSound("enemySound");
+
+    animateRobot("Robot_Wave", true);
+
+    wait(800, () => {
+        if (Math.random() < 0.3) {
+            message.textContent = "敵の攻撃は外れた！";
+        } else {
+            const damage = randomDamage();
+
+            playerHp = Math.max(0, playerHp - damage);
+
+            message.textContent =
+                "敵の攻撃！ " + damage + " ダメージ！";
+        }
+
+        updateHud();
+
+        if (playerHp <= 0) {
+            playerDefeated();
+            return;
+        }
+
+        wait(900, () => {
+            animateRobot("Robot_Idle");
+            busy = false;
+            updateHud();
+        });
+    });
+}
+
+function robotDefeated() {
+    gameEnded = true;
+    busy = false;
+    wins++;
+
+    message.textContent = "勝利！ロボットを倒した！";
+
+    playSound("deathSound");
+    animateRobot("Robot_Death", true);
+
+    updateHud();
+
+    wait(2200, () => {
+        nextLevel();
+    });
+}
+
+function playerDefeated() {
+    gameEnded = true;
+    busy = false;
+
+    message.textContent = "GAME OVER！負けました！";
+    animateRobot("Robot_Idle");
+
+    updateHud();
+}
+
+function nextLevel() {
+    level++;
+    robotMaxHp += 10;
+    robotHp = robotMaxHp;
+
+    playerHp = Math.min(
+        playerMaxHp,
+        playerHp + 15
+    );
+
+    potions++;
+
+    gameEnded = false;
+    busy = false;
+
+    animateRobot("Robot_Idle");
+    playSound("levelSound");
+
+    message.textContent =
+        "LEVEL UP！レベル " + level + "！";
+
+    updateHud();
+}
+
+function heal() {
+    if (busy || gameEnded || potions <= 0) return;
+    if (playerHp >= playerMaxHp) return;
+
+    potions--;
+
+    playerHp = Math.min(
+        playerMaxHp,
+        playerHp + 20
+    );
+
+    message.textContent = "HPを20回復した！";
+    updateHud();
+}
+
+function restartGame() {
+    battleToken++;
+
+    if (pendingTimer !== null) {
+        clearTimeout(pendingTimer);
+        pendingTimer = null;
+    }
+
+    robotHp = 50;
+    robotMaxHp = 50;
+
+    playerHp = 50;
+    playerMaxHp = 50;
+
+    level = 1;
+    wins = 0;
+    potions = 3;
+
+    busy = false;
+    gameEnded = false;
+
+    animateRobot("Robot_Idle");
+
+    message.textContent =
+        "ロボットをタップして攻撃！";
+
+    updateHud();
+}
+
+robot.addEventListener("click", attack);
+
+updateHud();
+</script>
+
+</body>
+</html>
